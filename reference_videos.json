@@ -1,0 +1,15 @@
+{
+  "_note": "Reference form videos, verified via YouTube oEmbed. Mirrors app/exercises/registry.py.",
+  "squat": {
+    "title": "How To Squat: Layne Norton's Squat Tutorial",
+    "channel": "Bodybuilding.com",
+    "video_id": "t2b8UdqmlFs",
+    "url": "https://www.youtube.com/watch?v=t2b8UdqmlFs"
+  },
+  "deadlift": {
+    "title": "\"How To\" Deadlift",
+    "channel": "Alan Thrall (Untamed Strength)",
+    "video_id": "Y1IGeJEXpF4",
+    "url": "https://www.youtube.com/watch?v=Y1IGeJEXpF4"
+  }
+}

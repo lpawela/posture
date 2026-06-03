@@ -1,0 +1,38 @@
+# Local workflows, containerised.
+#   docker compose run --rm tests     -> run the test suite in a container
+#   docker compose up app             -> migrate + seed + serve at http://localhost:8000
+services:
+  tests:
+    build: .
+    image: posture:latest
+    # No POSTURE_DATABASE_URL -> tests use the fast in-memory store.
+    command: pytest
+    volumes:
+      - .:/app
+
+  app:
+    build: .
+    image: posture:latest
+    environment:
+      # SQLite file (persisted via the bind mount). For Postgres, point this at
+      # the db service below, e.g. postgresql+psycopg://posture:posture@db/posture
+      POSTURE_DATABASE_URL: sqlite:////app/posture.db
+    # Migrations run on startup (build_default_store); seed first for demo data.
+    command: sh -c "python -m app.seed && uvicorn app.server:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - .:/app
+
+  # Optional Postgres backend. Start with:  docker compose --profile pg up
+  # and set POSTURE_DATABASE_URL on `app` to the postgresql+psycopg URL above
+  # (add `psycopg[binary]` to requirements.txt).
+  db:
+    image: postgres:16
+    profiles: ["pg"]
+    environment:
+      POSTGRES_USER: posture
+      POSTGRES_PASSWORD: posture
+      POSTGRES_DB: posture
+    ports:
+      - "5432:5432"

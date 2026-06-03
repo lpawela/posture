@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Posture — Exercise Form Coach</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>Posture</h1>
+    <div class="header-right">
+      <span id="whoami" class="whoami"></span>
+      <button id="logout" class="btn btn-small" hidden>Log out</button>
+    </div>
+  </header>
+
+  <!-- ============ AUTH ============ -->
+  <section id="auth-view" class="auth-view">
+    <div class="card auth-card">
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Log in</button>
+        <button class="tab" data-tab="register">Register</button>
+      </div>
+      <form id="auth-form" class="auth-form">
+        <input id="f-username" placeholder="Username" autocomplete="username" required />
+        <input id="f-password" type="password" placeholder="Password" autocomplete="current-password" required />
+        <div id="register-fields" hidden>
+          <input id="f-display" placeholder="Display name" />
+          <label class="control">
+            <span>I am a…</span>
+            <select id="f-role">
+              <option value="patient">Patient</option>
+              <option value="doctor">Doctor</option>
+            </select>
+          </label>
+        </div>
+        <button type="submit" id="auth-submit" class="btn btn-primary">Log in</button>
+        <p id="auth-error" class="error"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ APP ============ -->
+  <main id="app-view" class="app-view" hidden>
+    <nav id="nav" class="nav"></nav>
+
+    <!-- Patient: assignments -->
+    <section class="panel-page" data-page="assignments" hidden>
+      <h2>My exercises</h2>
+      <ul id="assignment-list" class="list"></ul>
+      <p class="muted" id="assignment-empty" hidden>No exercises assigned yet.</p>
+    </section>
+
+    <!-- Patient: live monitored workout -->
+    <section class="panel-page" data-page="workout" hidden>
+      <h2 id="workout-title">Workout</h2>
+      <div class="layout">
+        <div class="stage">
+          <div class="video-wrap">
+            <video id="video" playsinline autoplay muted></video>
+            <canvas id="overlay"></canvas>
+            <div id="tint" class="tint"></div>
+            <div id="status" class="status">Select an exercise to begin.</div>
+          </div>
+          <div class="controls">
+            <button id="start" class="btn btn-primary">Start</button>
+            <button id="end-set" class="btn" disabled>End set</button>
+            <button id="finish" class="btn" disabled>Finish</button>
+            <button id="reset" class="btn" disabled>Reset</button>
+          </div>
+        </div>
+        <aside class="panel">
+          <div class="rep-card">
+            <div id="rep-count" class="rep-count">0</div>
+            <div class="rep-label">reps</div>
+            <div id="set-info" class="phase">Set 0 / —</div>
+            <div id="last-score" class="phase">Last rep: —</div>
+          </div>
+          <div id="feedback" class="feedback">Stand side-on, full body in frame.</div>
+          <ul id="issues" class="issues"></ul>
+          <dl id="metrics" class="metrics"></dl>
+          <a id="reference-link" class="reference-link" href="#" target="_blank" rel="noopener" hidden></a>
+        </aside>
+      </div>
+      <div id="summary" class="summary" hidden></div>
+    </section>
+
+    <!-- Patient: scores / Doctor: also reused for a patient -->
+    <section class="panel-page" data-page="scores" hidden>
+      <h2 id="scores-title">My scores</h2>
+      <ul id="scores-list" class="list"></ul>
+      <p class="muted" id="scores-empty" hidden>No completed workouts yet.</p>
+    </section>
+
+    <!-- Doctor: patients -->
+    <section class="panel-page" data-page="patients" hidden>
+      <h2>My patients</h2>
+      <form id="add-patient-form" class="inline-form">
+        <input id="add-patient-username" placeholder="patient username" />
+        <button class="btn btn-primary" type="submit">Add patient</button>
+      </form>
+      <ul id="patient-list" class="list"></ul>
+
+      <div id="assign-box" class="card" hidden>
+        <h3 id="assign-title">Assign exercise</h3>
+        <form id="assign-form" class="inline-form">
+          <select id="assign-exercise"></select>
+          <input id="assign-sets" type="number" min="1" value="3" title="sets" />
+          <span>×</span>
+          <input id="assign-reps" type="number" min="1" value="12" title="reps" />
+          <input id="assign-notes" placeholder="notes (optional)" />
+          <button class="btn btn-primary" type="submit">Assign</button>
+        </form>
+        <p class="muted" id="assign-status"></p>
+      </div>
+    </section>
+
+    <!-- Exercise library (catalog) -->
+    <section class="panel-page" data-page="catalog" hidden>
+      <h2>Exercise library</h2>
+      <div class="catalog-controls">
+        <input id="cat-q" placeholder="Search exercises…" />
+        <select id="cat-muscle"><option value="">All muscles</option></select>
+        <select id="cat-category"><option value="">All equipment</option></select>
+        <select id="cat-difficulty"><option value="">All levels</option></select>
+      </div>
+      <p class="muted" id="cat-count"></p>
+      <div class="catalog-layout">
+        <ul id="cat-list" class="list"></ul>
+        <div id="cat-detail" class="card" hidden></div>
+      </div>
+    </section>
+
+    <!-- Admin: users (general data — both tiers) -->
+    <section class="panel-page" data-page="admin-users" hidden>
+      <h2>Users</h2>
+      <div id="admin-stats" class="admin-stats"></div>
+      <ul id="admin-user-list" class="list"></ul>
+      <div id="admin-medical" class="card" hidden></div>
+    </section>
+
+    <!-- Admin: create admin accounts (super admin only) -->
+    <section class="panel-page" data-page="admin-create" hidden>
+      <h2>Create admin account</h2>
+      <form id="create-admin-form" class="inline-form">
+        <input id="ca-username" placeholder="username" />
+        <input id="ca-password" type="password" placeholder="password" />
+        <select id="ca-tier">
+          <option value="basic">Basic — general user data only</option>
+          <option value="super">Super — full access (medical)</option>
+        </select>
+        <button class="btn btn-primary" type="submit">Create admin</button>
+      </form>
+      <p class="muted" id="ca-status"></p>
+    </section>
+
+    <!-- Messaging -->
+    <section class="panel-page" data-page="messages" hidden>
+      <h2>Messages</h2>
+      <div class="messaging">
+        <ul id="contact-list" class="contacts"></ul>
+        <div class="thread">
+          <div id="thread-messages" class="thread-messages"></div>
+          <form id="message-form" class="message-form">
+            <input id="message-body" placeholder="Type a message…" autocomplete="off" />
+            <button class="btn btn-primary" type="submit">Send</button>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

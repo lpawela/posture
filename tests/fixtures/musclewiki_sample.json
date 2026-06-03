@@ -1,0 +1,38 @@
+[
+  {
+    "id": 0,
+    "exercise_name": "Barbell Curl",
+    "videoURL": [
+      "https://media.musclewiki.com/uploads/videos/male-barbell-curl-front.mp4#t=0.1",
+      "https://media.musclewiki.com/uploads/videos/male-barbell-curl-side.mp4#t=0.1"
+    ],
+    "steps": ["Curl the bar up.", "Lower under control."],
+    "Category": "Barbell",
+    "Difficulty": "Beginner",
+    "Force": "Pull",
+    "Grips": "Underhand",
+    "target": {"Primary": ["Biceps"], "Secondary": ["Forearms"]},
+    "youtubeURL": "https://www.youtube.com/embed/abc123",
+    "details": "**Detailed How To:** keep elbows pinned.",
+    "Aka": "EZ-Bar Curl"
+  },
+  {
+    "id": 1,
+    "exercise_name": "Barbell Curl",
+    "videoURL": ["https://media.musclewiki.com/uploads/videos/db-curl.mp4#t=0.1"],
+    "steps": ["Alternate arms."],
+    "Category": "Dumbbells",
+    "target": {"Primary": ["Biceps"]},
+    "youtubeURL": ""
+  },
+  {
+    "id": 2,
+    "exercise_name": "Air Squat",
+    "videoURL": ["https://media.musclewiki.com/uploads/videos/air-squat.mp4#t=0.1"],
+    "steps": ["Sit back and down.", "Drive up."],
+    "Category": "Bodyweight",
+    "Difficulty": "Beginner",
+    "target": {"Primary": ["Quads"], "Secondary": ["Glutes", "Hamstrings"]},
+    "youtubeURL": "https://www.youtube.com/embed/xyz789"
+  }
+]
