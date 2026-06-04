@@ -3,6 +3,8 @@
 # already have the deps in your own environment.
 
 IMAGE := posture:latest
+# Fixed name for the running server container, so `make stop` can find it.
+CONTAINER := posture
 # Host port to publish the app on. Override if 8000 is taken, e.g. `make serve PORT=8001`.
 PORT ?= 8000
 # Database URL for the served app. SQLite file by default; override for Postgres,
@@ -12,7 +14,7 @@ DB_URL ?= sqlite:////app/posture.db
 HOST ?= $(shell hostname -I 2>/dev/null | awk '{print $$1}')
 CERT_DIR := certs
 
-.PHONY: build test test-local serve serve-local serve-https certs migrate seed catalog clean
+.PHONY: build test test-local serve serve-local serve-https stop certs migrate seed catalog clean
 
 build:
 	docker build -t $(IMAGE) .
@@ -35,8 +37,9 @@ catalog: build
 
 # Serve at http://localhost:$(PORT), backed by the database. Migrations run on
 # startup (build_default_store); we seed first so there's data to log in with.
+# Runs as container "$(CONTAINER)"; use `make stop` to shut it down.
 serve: build
-	docker run --rm -p $(PORT):8000 -e POSTURE_DATABASE_URL=$(DB_URL) -v "$(CURDIR)":/app $(IMAGE) \
+	docker run --rm --name $(CONTAINER) -p $(PORT):8000 -e POSTURE_DATABASE_URL=$(DB_URL) -v "$(CURDIR)":/app $(IMAGE) \
 		sh -c "python -m app.seed && uvicorn app.server:app --host 0.0.0.0 --port 8000"
 
 # Run tests without Docker (requires deps installed locally).
@@ -61,9 +64,13 @@ certs:
 # Browsers only allow getUserMedia in a secure context, which a LAN IP needs TLS for.
 serve-https: build certs
 	@echo ">>> Open  https://$(HOST):$(PORT)  on your tablet (accept the self-signed warning once)."
-	docker run --rm -p $(PORT):8000 -e POSTURE_DATABASE_URL=$(DB_URL) -v "$(CURDIR)":/app $(IMAGE) \
+	docker run --rm --name $(CONTAINER) -p $(PORT):8000 -e POSTURE_DATABASE_URL=$(DB_URL) -v "$(CURDIR)":/app $(IMAGE) \
 		sh -c "python -m app.seed && uvicorn app.server:app --host 0.0.0.0 --port 8000 \
 		       --ssl-keyfile certs/server.key --ssl-certfile certs/server.crt"
+
+# Stop (and remove) the running server container.
+stop:
+	@docker rm -f $(CONTAINER) 2>/dev/null && echo "stopped $(CONTAINER)" || echo "$(CONTAINER) is not running"
 
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
