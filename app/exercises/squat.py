@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from app.exercises.base import ExerciseAnalyzer, FormIssue, Severity
-from app.geometry import angle, angle_with_vertical, midpoint
+from app.geometry import angle_with_vertical
 from app.landmarks import PoseFrame, PoseLandmark as L
 from app.scoring import HIGHER_IS_WORSE, LiveBound, ScoringRule
 
@@ -30,15 +30,18 @@ class SquatAnalyzer(ExerciseAnalyzer):
     # Coaching thresholds.
     depth_target = 100.0      # knee angle at the bottom for ~parallel depth
     max_forward_lean = 55.0   # torso deviation from vertical (degrees)
+    # Both knees must be this visible (a margin above MIN_VISIBILITY) before we
+    # judge wobble, so a far leg hovering at the gate can't flicker the metric.
+    WOBBLE_MIN_VIS = 0.6
 
     down_cue = "Sit back and down — keep your chest up and knees tracking out."
     up_cue = "Stand tall and squeeze your glutes to finish the rep."
 
-    required_landmarks = (
-        L.LEFT_SHOULDER, L.RIGHT_SHOULDER,
-        L.LEFT_HIP, L.RIGHT_HIP,
-        L.LEFT_KNEE, L.RIGHT_KNEE,
-        L.LEFT_ANKLE, L.RIGHT_ANKLE,
+    # One full leg+torso chain per side; analysis runs as long as either side
+    # is visible (so a side-on view, which occludes the far side, still works).
+    required_sides = (
+        (L.LEFT_SHOULDER, L.LEFT_HIP, L.LEFT_KNEE, L.LEFT_ANKLE),
+        (L.RIGHT_SHOULDER, L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE),
     )
 
     # Reward a deep squat (low min knee angle) held upright (low max lean).
@@ -55,24 +58,51 @@ class SquatAnalyzer(ExerciseAnalyzer):
         ),
     )
 
-    # Live tint: clear up to ~45° of forward lean, fully red by ~80°.
+    # Live tint:
+    #  * torso_lean -- clear through a normal squat's incline (~35°), ramping to
+    #    fully red by ~65° (just past the excessive-lean fault at 55°). The old
+    #    good=45/limit=80 band stayed clear through almost the whole movement and
+    #    could never reach red (lean tops out at 90°).
+    #  * knee_asymmetry -- only emitted when both legs are visible (a front-on
+    #    view); flags side-to-side wobble / one knee caving relative to the other.
     live_bounds = (
-        LiveBound(metric="torso_lean", good=45.0, limit=80.0, direction=HIGHER_IS_WORSE),
+        LiveBound(metric="torso_lean", good=35.0, limit=65.0, direction=HIGHER_IS_WORSE),
+        LiveBound(metric="knee_asymmetry", good=18.0, limit=45.0, direction=HIGHER_IS_WORSE),
     )
 
     def compute_metrics(self, frame: PoseFrame) -> Dict[str, float]:
-        knee = 0.5 * (
-            angle(frame[L.LEFT_HIP], frame[L.LEFT_KNEE], frame[L.LEFT_ANKLE])
-            + angle(frame[L.RIGHT_HIP], frame[L.RIGHT_KNEE], frame[L.RIGHT_ANKLE])
+        # Pick the usable side(s) once so knee, hip and torso all describe the
+        # same leg (never a blend of left + right on a borderline frame).
+        sides = self.frame_sides(frame)
+        knee, both, knee_asym = self._bilateral_angle(
+            frame,
+            (L.LEFT_HIP, L.LEFT_KNEE, L.LEFT_ANKLE),
+            (L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE),
+            sides,
         )
-        hip = 0.5 * (
-            angle(frame[L.LEFT_SHOULDER], frame[L.LEFT_HIP], frame[L.LEFT_KNEE])
-            + angle(frame[L.RIGHT_SHOULDER], frame[L.RIGHT_HIP], frame[L.RIGHT_KNEE])
+        hip, _, _ = self._bilateral_angle(
+            frame,
+            (L.LEFT_SHOULDER, L.LEFT_HIP, L.LEFT_KNEE),
+            (L.RIGHT_SHOULDER, L.RIGHT_HIP, L.RIGHT_KNEE),
+            sides,
         )
-        shoulder_mid = midpoint(frame[L.LEFT_SHOULDER], frame[L.RIGHT_SHOULDER])
-        hip_mid = midpoint(frame[L.LEFT_HIP], frame[L.RIGHT_HIP])
-        torso_lean = angle_with_vertical(hip_mid, shoulder_mid)
-        return {"knee_angle": knee, "hip_angle": hip, "torso_lean": torso_lean}
+        hip_pt, shoulder_pt = self._bilateral_segment(
+            frame, (L.LEFT_HIP, L.LEFT_SHOULDER), (L.RIGHT_HIP, L.RIGHT_SHOULDER), sides
+        )
+        torso_lean = angle_with_vertical(hip_pt, shoulder_pt)
+        metrics = {"knee_angle": knee, "hip_angle": hip, "torso_lean": torso_lean}
+        # Wobble (side-to-side knee asymmetry) is only meaningful when both legs
+        # are clearly visible (a front-on view). `both` guarantees knee_asym is a
+        # real |left - right| (not the single-side 0.0 sentinel); the >= 0.6
+        # margin (stricter than `both`'s 0.5 visibility floor) then keeps a far
+        # leg hovering at the gate from flickering the metric on/off. The margin
+        # is what actually gates here; `both` documents the real precondition.
+        left_chain, right_chain = self.required_sides
+        if both and min(
+            frame.min_visibility(left_chain), frame.min_visibility(right_chain)
+        ) >= self.WOBBLE_MIN_VIS:
+            metrics["knee_asymmetry"] = knee_asym
+        return metrics
 
     def evaluate_form(self, metrics, extremes) -> List[FormIssue]:
         issues: List[FormIssue] = []

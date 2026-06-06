@@ -1,0 +1,13 @@
+{
+  "name": "posture-web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Front-end unit tests for the Posture web client (hud logic + PoseWorkout lifecycle + jsdom DOM glue).",
+  "scripts": {
+    "test": "node --import ./test/register.mjs --test test/hud.test.mjs test/pose.test.mjs test/app.dom.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.0"
+  }
+}

@@ -182,16 +182,33 @@ Escape hatch if you already have the deps locally:
 make test-local                   # just `pytest`
 ```
 
-The suite (**136 tests**) covers geometry, the landmark model, both analyzers
-(rep counting + every form rule), the scoring scheme, the `WorkoutSession`
+The Python suite (**160 tests**) covers geometry, the landmark model, both
+analyzers (rep counting + every form rule, plus side-on / occluded-side and
+degenerate-frame handling), the scoring scheme, the `WorkoutSession`
 aggregator, password hashing, the **data store contract run against *both* the
-in-memory and SQLAlchemy backends**, the REST API (auth, linking, assignments,
-scores, messaging — including permission checks), the session-recording
-WebSocket, the **admin tiers** (general-vs-medical access boundary), the
-**Alembic migrations** (schema build + idempotency), the **seed data**, the
-API running on the SQL store, and the **exercise catalog** (MuscleWiki
-normalisation + slug de-duplication, store parity, import, API, and a sanity
-check over the real local dataset).
+in-memory and SQLAlchemy backends**, the REST API (auth, logout/revoke, linking,
+assignments, scores, messaging — including permission checks), the
+session-recording WebSocket (including foreign-assignment rejection), the
+**admin tiers** (general-vs-medical access boundary), the **Alembic migrations**
+(schema build + idempotency), the **seed data**, the API running on the SQL
+store, and the **exercise catalog** (MuscleWiki normalisation + slug
+de-duplication, store parity, import, API, and a sanity check over the real
+local dataset).
+
+### Front-end tests
+
+The browser client has its own unit tests (Node's test runner + jsdom),
+covering the pure HUD logic in [`web/hud.js`](web/hud.js) (set/rep label, tint
+mapping, the rep-feedback latch, the navigate-away decision) and the
+`PoseWorkout` **camera/WebSocket lifecycle** in [`web/pose.js`](web/pose.js)
+(start/stop/restart, finish-and-release, disconnect recovery, and the
+superseded-socket race), plus a jsdom check that `app.js` applies those
+decisions to the real DOM:
+
+```bash
+make test-web                     # node:20 container; installs jsdom, runs the tests
+# or locally, if you have Node 20+:  cd web && npm install && npm test
+```
 
 ## Running the app
 

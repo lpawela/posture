@@ -14,14 +14,20 @@ DB_URL ?= sqlite:////app/posture.db
 HOST ?= $(shell hostname -I 2>/dev/null | awk '{print $$1}')
 CERT_DIR := certs
 
-.PHONY: build test test-local serve serve-local serve-https stop certs migrate seed catalog clean
+.PHONY: build test test-web test-local serve serve-local serve-https stop certs migrate seed catalog clean
 
 build:
 	docker build -t $(IMAGE) .
 
-# Run the full test suite inside a container.
+# Run the full Python test suite inside a container.
 test: build
 	docker run --rm -v "$(CURDIR)":/app $(IMAGE) pytest
+
+# Run the front-end unit tests (hud logic + PoseWorkout lifecycle + jsdom DOM
+# glue) in a Node container. Installs the (dev-only) jsdom dependency per run.
+test-web:
+	docker run --rm -v "$(CURDIR)/web":/web -w /web node:20-slim \
+		sh -c "npm install --no-audit --no-fund --silent && npm test"
 
 # Apply database migrations (Alembic) inside a container.
 migrate: build

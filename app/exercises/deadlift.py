@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from app.exercises.base import ExerciseAnalyzer, FormIssue, Severity
-from app.geometry import angle, angle_with_vertical, midpoint
+from app.geometry import angle_with_vertical
 from app.landmarks import PoseFrame, PoseLandmark as L
 from app.scoring import HIGHER_IS_WORSE, LOWER_IS_WORSE, LiveBound, ScoringRule
 
@@ -36,11 +36,11 @@ class DeadliftAnalyzer(ExerciseAnalyzer):
     down_cue = "Hinge at the hips, flat back, and keep the bar close to your shins."
     up_cue = "Drive through the floor and stand tall — lock out hips and knees."
 
-    required_landmarks = (
-        L.LEFT_SHOULDER, L.RIGHT_SHOULDER,
-        L.LEFT_HIP, L.RIGHT_HIP,
-        L.LEFT_KNEE, L.RIGHT_KNEE,
-        L.LEFT_ANKLE, L.RIGHT_ANKLE,
+    # One full leg+torso chain per side; analysis runs as long as either side
+    # is visible (so a side-on view, which occludes the far side, still works).
+    required_sides = (
+        (L.LEFT_SHOULDER, L.LEFT_HIP, L.LEFT_KNEE, L.LEFT_ANKLE),
+        (L.RIGHT_SHOULDER, L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE),
     )
 
     # Reward a full lockout (high max hip angle) without an unsafe, overly
@@ -65,17 +65,27 @@ class DeadliftAnalyzer(ExerciseAnalyzer):
     )
 
     def compute_metrics(self, frame: PoseFrame) -> Dict[str, float]:
-        hip = 0.5 * (
-            angle(frame[L.LEFT_SHOULDER], frame[L.LEFT_HIP], frame[L.LEFT_KNEE])
-            + angle(frame[L.RIGHT_SHOULDER], frame[L.RIGHT_HIP], frame[L.RIGHT_KNEE])
+        # Pick the usable side(s) once so hip, knee and torso all describe the
+        # same side (never a blend of left + right on a borderline frame). The
+        # bilateral wobble/asymmetry output is intentionally unused here: a
+        # front-on knee asymmetry isn't a primary deadlift fault (unlike squat).
+        sides = self.frame_sides(frame)
+        hip, _, _ = self._bilateral_angle(
+            frame,
+            (L.LEFT_SHOULDER, L.LEFT_HIP, L.LEFT_KNEE),
+            (L.RIGHT_SHOULDER, L.RIGHT_HIP, L.RIGHT_KNEE),
+            sides,
         )
-        knee = 0.5 * (
-            angle(frame[L.LEFT_HIP], frame[L.LEFT_KNEE], frame[L.LEFT_ANKLE])
-            + angle(frame[L.RIGHT_HIP], frame[L.RIGHT_KNEE], frame[L.RIGHT_ANKLE])
+        knee, _, _ = self._bilateral_angle(
+            frame,
+            (L.LEFT_HIP, L.LEFT_KNEE, L.LEFT_ANKLE),
+            (L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE),
+            sides,
         )
-        shoulder_mid = midpoint(frame[L.LEFT_SHOULDER], frame[L.RIGHT_SHOULDER])
-        hip_mid = midpoint(frame[L.LEFT_HIP], frame[L.RIGHT_HIP])
-        torso_lean = angle_with_vertical(hip_mid, shoulder_mid)
+        hip_pt, shoulder_pt = self._bilateral_segment(
+            frame, (L.LEFT_HIP, L.LEFT_SHOULDER), (L.RIGHT_HIP, L.RIGHT_SHOULDER), sides
+        )
+        torso_lean = angle_with_vertical(hip_pt, shoulder_pt)
         return {"hip_angle": hip, "knee_angle": knee, "torso_lean": torso_lean}
 
     def evaluate_form(self, metrics, extremes) -> List[FormIssue]:

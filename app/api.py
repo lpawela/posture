@@ -136,6 +136,16 @@ def build_api_router() -> APIRouter:
     def me(user: User = Depends(get_current_user)) -> dict:
         return user.public()
 
+    @router.post("/auth/logout")
+    def logout(
+        authorization: Optional[str] = Header(default=None),
+        store: Store = Depends(get_store),
+    ) -> dict:
+        """Revoke the caller's bearer token server-side (idempotent)."""
+        if authorization and authorization.lower().startswith("bearer "):
+            store.revoke_token(authorization[7:].strip())
+        return {"ok": True}
+
     # ----- doctor: patients, assignments, scores -------------------------- #
 
     @router.post("/doctor/patients")

@@ -93,6 +93,25 @@ def test_ws_reports_live_deviation():
     assert folded["deviation"] > upright["deviation"]
 
 
+def test_ws_rejects_foreign_assignment():
+    # A patient supplying an assignment_id that isn't theirs must be rejected
+    # outright, not silently downgraded to a mis-attributed free session.
+    store = Store()
+    doc = store.create_user("doc", "pwpw", "Doc", Role.DOCTOR)
+    p1 = store.create_user("p1", "pwpw", "P1", Role.PATIENT)
+    p2 = store.create_user("p2", "pwpw", "P2", Role.PATIENT)
+    store.link(doc.id, p1.id)
+    assignment = store.create_assignment(doc.id, p1.id, "squat", 2, 2)
+    token2 = store.issue_token(p2)  # a different patient's token
+
+    client = TestClient(create_app(store))
+    url = f"/ws/analyze?assignment_id={assignment.id}&token={token2}"
+    with client.websocket_connect(url) as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert "assignment" in msg["message"].lower()
+
+
 def test_ws_anonymous_does_not_record():
     store = Store()
     client = TestClient(create_app(store))

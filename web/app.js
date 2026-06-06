@@ -3,6 +3,14 @@
 // live camera session.
 
 import { PoseWorkout, cameraErrorMessage } from "./pose.js";
+import {
+  SETUP_HINT,
+  setInfoText,
+  smoothDeviation,
+  tintStyle,
+  decideFeedback,
+  navActionFor,
+} from "./hud.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -70,14 +78,55 @@ let workout = null;
 let selectedContact = null;
 let selectedPatient = null;
 
+// Live-workout HUD state (reset whenever a session (re)starts). The pure logic
+// that operates on this state lives in hud.js; here we only hold it and apply
+// the results to the DOM.
+let smoothedDeviation = 0;   // EMA of the out-of-bounds deviation → steadier tint
+let missCount = 0;           // consecutive pose-not-visible frames
+let feedbackHoldUntil = 0;   // keep a rep's feedback on screen until this time
+let lastRepCount = 0;        // latest cumulative rep count this session
+let workoutRecording = false; // server will persist this session (patient + assignment)
+
+function resetHudState() {
+  smoothedDeviation = 0;
+  missCount = 0;
+  feedbackHoldUntil = 0;
+  lastRepCount = 0;
+  // NOTE: workoutRecording is deliberately NOT reset here. It reflects the
+  // connection's recording capability (set by onReady) and must survive a
+  // mid-session Reset; otherwise a post-reset workout would be discarded rather
+  // than finished on nav-away. The nav-away guard also requires workout.isOpen(),
+  // so a stale `true` on a closed socket can't trigger a spurious finish.
+}
+
 // --- view switching ------------------------------------------------------ //
 
-function showPage(name) {
+// `highlight` is the nav tab to mark active — defaults to `name`, but the
+// workout sub-page (which has no tab of its own) passes its originating page so
+// the nav doesn't go blank.
+function showPage(name, highlight = name) {
+  // Leaving the workout page must release the camera / WebSocket; otherwise the
+  // session keeps streaming (and burning battery) behind a hidden overlay. If a
+  // recordable session with reps is in progress, FINISH it (which persists the
+  // workout, then releases the camera via onSummary) rather than discarding it.
+  if (name !== "workout" && workout) {
+    const action = navActionFor({ recording: workoutRecording, reps: lastRepCount, open: workout.isOpen() });
+    if (action === "finish") {
+      // Persist the partial workout AND release the camera now (don't wait on a
+      // server reply that might never arrive); then clear the gate so a second
+      // nav before the summary lands just stops.
+      workout.finishAndRelease();
+      workoutRecording = false;
+      lastRepCount = 0;
+    } else {
+      workout.stop();
+    }
+  }
   document.querySelectorAll(".panel-page").forEach((p) => {
     p.hidden = p.dataset.page !== name;
   });
   document.querySelectorAll(".nav .tab").forEach((b) => {
-    b.classList.toggle("active", b.dataset.page === name);
+    b.classList.toggle("active", b.dataset.page === highlight);
   });
   if (name === "assignments") loadAssignments();
   if (name === "scores") loadMyScores();
@@ -147,8 +196,17 @@ $("auth-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("logout").addEventListener("click", () => {
+$("logout").addEventListener("click", async () => {
+  const btn = $("logout");
+  if (btn.disabled) return;        // ignore double-clicks
+  btn.disabled = true;
   if (workout) workout.stop();
+  // Best-effort server-side token revoke, bounded so a stalled request can't
+  // hang logout — we always fall through to clear local state and reload.
+  await Promise.race([
+    api.post("/api/auth/logout").catch(() => {}),
+    new Promise((r) => setTimeout(r, 1500)),
+  ]);
   api.clear();
   location.reload();
 });
@@ -181,9 +239,25 @@ function ensureWorkout() {
     video: $("video"),
     canvas: $("overlay"),
     onStatus: (s) => ($("status").textContent = s),
+    onReady: (m) => {
+      workoutRecording = !!m.recording;
+      $("status").textContent = m.recording
+        ? "Tracking — this workout will be saved for your doctor."
+        : "Tracking — live feedback only (not recorded).";
+    },
     onAnalysis: renderAnalysis,
-    onSetComplete: (m) => ($("set-info").textContent = `Set ${m.completed_sets} / ${m.target_sets ?? "—"} · ${m.total_reps} reps`),
+    onSetComplete: (m) => ($("set-info").textContent = setInfoText(m)),
     onSummary: renderSummary,
+    onClosed: () => {
+      // The live socket closed unexpectedly (network drop, or a finish whose
+      // summary never arrived). Reset the controls so the user can start again
+      // rather than being stuck with Start disabled.
+      workoutRecording = false;
+      lastRepCount = 0;
+      $("start").disabled = false;
+      ["end-set", "finish", "reset"].forEach((id) => ($(id).disabled = true));
+      setTint(0);
+    },
   });
   return workout;
 }
@@ -193,29 +267,74 @@ function ensureWorkout() {
 function setTint(deviation) {
   const tint = document.getElementById("tint");
   if (!tint) return;
-  const v = Math.max(0, Math.min(1, deviation || 0));
-  tint.style.backgroundColor = `hsl(${Math.round(60 * (1 - v))}, 100%, 50%)`; // 60=yellow → 0=red
-  tint.style.opacity = v > 0.02 ? (0.12 + 0.5 * v).toFixed(3) : "0";
+  const { backgroundColor, opacity } = tintStyle(deviation);
+  tint.style.backgroundColor = backgroundColor;
+  tint.style.opacity = opacity;
 }
 
 // Small debug hook (handy for manual/automated UI checks of the tint).
 if (typeof window !== "undefined") window.__posture = { setTint };
 
+const METRIC_LABELS = {
+  knee_angle: "Knee",
+  hip_angle: "Hip",
+  torso_lean: "Torso lean",
+};
+// Metrics that drive the live tint but aren't shown as a readout row (e.g.
+// knee_asymmetry is only present on front-on frames, so a row would blink
+// in/out as the far leg's visibility wavers).
+const HIDDEN_METRICS = new Set(["knee_asymmetry"]);
+
 function renderAnalysis(msg) {
   $("rep-count").textContent = msg.rep_count;
-  setTint(msg.deviation);
-  const s = msg.session || {};
-  $("set-info").textContent = `Set ${s.completed_sets + 1} / ${s.target_sets ?? "—"} · rep ${s.current_set_reps}/${s.target_reps ?? "—"}`;
-  if (msg.rep_score != null) $("last-score").textContent = `Last rep: ${msg.rep_score}`;
-  $("feedback").textContent = msg.feedback || "";
-  const issues = $("issues");
-  issues.innerHTML = "";
-  for (const i of msg.form_issues || []) issues.append(el("li", {}, i.message));
+
+  // Brief tracking dropouts (a landmark dipping below the visibility threshold
+  // for a frame or two) shouldn't blank the panel and clear the warning tint.
+  // Hold the last good display; only show "step into frame" after a sustained
+  // loss of tracking.
+  if (msg.pose_visible === false) {
+    if (++missCount < 8) return; // ~0.25s at 30fps
+    smoothedDeviation = 0;
+    setTint(0);
+    $("metrics").innerHTML = "";
+    // Don't stomp a just-completed rep's feedback that's still within its hold;
+    // clear the feedback line and its matching fault cues together once it does.
+    if (performance.now() >= feedbackHoldUntil) {
+      $("feedback").textContent = msg.feedback || SETUP_HINT;
+      $("issues").innerHTML = "";
+    }
+    return;
+  }
+  missCount = 0;
+  lastRepCount = msg.rep_count;
+
+  // Smooth the deviation so a noisy frame near the threshold doesn't flicker the
+  // tint; the mapping + EMA + clear-when-in-bounds logic lives in hud.js.
+  smoothedDeviation = smoothDeviation(smoothedDeviation, msg.deviation);
+  setTint(smoothedDeviation);
+
+  $("set-info").textContent = setInfoText(msg.session || {});
+
+  // The feedback line + fault-cue latch is decided purely in hud.js; here we
+  // just apply the directive to the DOM.
+  const fb = decideFeedback(msg, performance.now(), feedbackHoldUntil);
+  feedbackHoldUntil = fb.holdUntil;
+  if (fb.rebuildIssues) {
+    $("last-score").textContent = `Last rep: ${msg.rep_score}`;
+    $("feedback").textContent = fb.feedback;
+    const issues = $("issues");
+    issues.innerHTML = "";
+    for (const i of msg.form_issues || []) issues.append(el("li", {}, i.message));
+  } else if (fb.feedback != null) {
+    $("feedback").textContent = fb.feedback;
+    if (fb.clearIssues) $("issues").innerHTML = "";
+  }
+
   const metrics = $("metrics");
   metrics.innerHTML = "";
-  const LABELS = { knee_angle: "Knee", hip_angle: "Hip", torso_lean: "Torso lean" };
   for (const [k, v] of Object.entries(msg.metrics || {})) {
-    metrics.append(el("dt", {}, LABELS[k] || k), el("dd", {}, `${v}°`));
+    if (HIDDEN_METRICS.has(k)) continue;
+    metrics.append(el("dt", {}, METRIC_LABELS[k] || k), el("dd", {}, `${v}°`));
   }
 }
 
@@ -236,6 +355,9 @@ function renderSummary(msg) {
   );
   ["end-set", "finish", "reset"].forEach((id) => ($(id).disabled = true));
   $("start").disabled = false;
+  $("status").textContent = "Workout complete.";
+  workoutRecording = false;
+  resetHudState();
   setTint(0);
   if (workout) workout.stop();
 }
@@ -247,8 +369,26 @@ function summaryStat(label, value) {
   ]);
 }
 
+function resetWorkoutHud(assignment) {
+  const init = {
+    completed_sets: 0,
+    current_set_reps: 0,
+    target_sets: assignment.target_sets,
+    target_reps: assignment.target_reps,
+  };
+  $("set-info").textContent = setInfoText(init);
+  $("rep-count").textContent = "0";
+  $("last-score").textContent = "Last rep: —";
+  $("feedback").textContent = SETUP_HINT;
+  $("issues").innerHTML = "";
+  $("metrics").innerHTML = "";
+  resetHudState();
+  setTint(0);
+}
+
 async function startWorkout(assignment) {
-  showPage("workout");
+  // The workout sub-page has no nav tab; keep "My exercises" highlighted.
+  showPage("workout", "assignments");
   $("summary").hidden = true;
   $("workout-title").textContent =
     (exercisesMeta[assignment.exercise]?.display_name || assignment.exercise) +
@@ -261,9 +401,11 @@ async function startWorkout(assignment) {
     link.textContent = "▶ Reference: " + ref.title;
   } else link.hidden = true;
 
-  $("set-info").textContent = `Set 1 / ${assignment.target_sets} · rep 0/${assignment.target_reps}`;
-  $("rep-count").textContent = "0";
-  $("last-score").textContent = "Last rep: —";
+  resetWorkoutHud(assignment);
+  // Start is re-enabled here so a session can be (re)started after navigating
+  // away mid-workout (which stops the previous session).
+  $("start").disabled = false;
+  ["end-set", "finish", "reset"].forEach((id) => ($(id).disabled = true));
 
   // Heads-up before they even press Start if the page can't use the camera.
   if (!window.isSecureContext) {
@@ -274,6 +416,7 @@ async function startWorkout(assignment) {
   const w = ensureWorkout();
   $("start").onclick = async () => {
     $("start").disabled = true;
+    resetHudState();
     setTint(0);
     try {
       await w.start({ assignmentId: assignment.id, exercise: assignment.exercise, token: api.token });
@@ -284,8 +427,20 @@ async function startWorkout(assignment) {
     }
   };
   $("end-set").onclick = () => w.endSet();
-  $("finish").onclick = () => w.finish();
-  $("reset").onclick = () => { w.reset(); $("rep-count").textContent = "0"; $("summary").hidden = true; setTint(0); };
+  $("finish").onclick = () => {
+    w.finishAndRelease();
+    // Session is ending: clear the nav-away gate (so a nav before the summary
+    // can't re-finish) and lock the action buttons (no stray commands in the
+    // finish→summary window). renderSummary re-enables Start when it arrives.
+    workoutRecording = false;
+    lastRepCount = 0;
+    ["end-set", "finish", "reset"].forEach((id) => ($(id).disabled = true));
+  };
+  $("reset").onclick = () => {
+    w.reset();
+    resetWorkoutHud(assignment);
+    $("summary").hidden = true;
+  };
 }
 
 // --- patient: my scores -------------------------------------------------- //
@@ -590,3 +745,7 @@ $("message-form").addEventListener("submit", async (e) => {
   }
   $("auth-view").hidden = false;
 })();
+
+// Exported for the jsdom unit tests. Harmless in the browser: the page-entry
+// module may declare exports; nothing imports app.js at runtime.
+export { showPage, renderAnalysis, setTint, resetHudState };

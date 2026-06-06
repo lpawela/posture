@@ -1,11 +1,32 @@
 import pytest
 
 from app.exercises.deadlift import DeadliftAnalyzer
+from app.landmarks import Landmark, PoseFrame, PoseLandmark as L
 from pose_factory import deadlift_pose
 
 
 def codes(result):
     return {issue.code for issue in result.form_issues}
+
+
+RIGHT_SIDE = (L.RIGHT_SHOULDER, L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE)
+
+
+def _collapse_side(frame, indices, visibility=0.1):
+    """Occlude one side: collapse its landmarks onto a single low-confidence
+    point (so ``angle()`` on that side would raise)."""
+    lms = list(frame)
+    for i in indices:
+        lms[int(i)] = Landmark(0.9, 0.1, 0.0, visibility)
+    return PoseFrame(lms)
+
+
+def test_side_on_with_collapsed_far_side_still_analyses():
+    a = DeadliftAnalyzer()
+    frame = _collapse_side(deadlift_pose(hip_angle=120, torso_lean=45), RIGHT_SIDE)
+    res = a.update(frame)
+    assert res.pose_visible
+    assert res.metrics["hip_angle"] == pytest.approx(120, abs=3)
 
 
 def run(analyzer, *frames):

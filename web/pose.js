@@ -17,19 +17,26 @@ const MODEL_URL =
   "pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
 export class PoseWorkout {
-  constructor({ video, canvas, onAnalysis, onSummary, onSetComplete, onStatus }) {
+  constructor({ video, canvas, onAnalysis, onSummary, onSetComplete, onStatus, onReady, onClosed }) {
     this.video = video;
     this.canvas = canvas;
     this.onAnalysis = onAnalysis || (() => {});
     this.onSummary = onSummary || (() => {});
     this.onSetComplete = onSetComplete || (() => {});
     this.onStatus = onStatus || (() => {});
+    this.onReady = onReady || (() => {});
+    this.onClosed = onClosed || (() => {});
     this.landmarker = null;
     this.drawer = null;
     this.ws = null;
     this.running = false;
     this.facingMode = "user";
     this.lastVideoTime = -1;
+    // Monotonic session id. Bumped by stop()/start() so a superseded session's
+    // late async callbacks (an old socket closing, an in-flight start finishing)
+    // can detect they are stale and bail instead of clobbering the live session.
+    this._gen = 0;
+    this._errored = false; // a server "error" message was shown this session
   }
 
   async loadModel() {
@@ -55,27 +62,64 @@ export class PoseWorkout {
   }
 
   async start({ exercise, assignmentId, token } = {}) {
+    // Replace any previous session so a second Start (e.g. after navigating
+    // away and back) can't leave a stale WebSocket and predict loop running
+    // alongside the new one, doubling the frames sent. stop() bumps _gen, so
+    // this session is identified by `gen` and any older callback is now stale.
+    this.stop();
+    const gen = this._gen;
+    this._errored = false;
+
     // 1) Acquire the camera FIRST, while still inside the click's user gesture.
     //    Awaiting a slow model download before this can make iOS/Safari drop
     //    the permission prompt entirely.
     this.onStatus("Requesting camera…");
     const stream = await this._getCamera();
+    // If this session was superseded while acquiring the camera (the user
+    // navigated away or pressed Start again), drop the stream and bail — don't
+    // attach it or start a loop the new/none session shouldn't own.
+    if (gen !== this._gen) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
     this.video.srcObject = stream;
     const mirror = this.facingMode === "user";
     this.video.classList.toggle("mirror", mirror);
     this.canvas.classList.toggle("mirror", mirror);
-    await this.video.play();
 
-    // 2) Then load the pose model and open the analysis socket.
-    this.onStatus("Loading pose model…");
-    await this.loadModel();
-    this.ws = new WebSocket(this._wsUrl({ exercise, assignmentId, token }));
-    this.ws.onmessage = (e) => this._onMessage(JSON.parse(e.data));
-    this.ws.onclose = () => { if (this.running) this.onStatus("Disconnected."); };
+    try {
+      await this.video.play();
 
-    this.running = true;
-    this.onStatus("Tracking…");
-    requestAnimationFrame(() => this._predict());
+      // 2) Then load the pose model and open the analysis socket.
+      this.onStatus("Loading pose model…");
+      await this.loadModel();
+      if (gen !== this._gen) { this._releaseCapture(); return; } // superseded mid-load
+
+      const ws = (this.ws = new WebSocket(this._wsUrl({ exercise, assignmentId, token })));
+      ws.onmessage = (e) => this._onMessage(JSON.parse(e.data));
+      // When the live socket closes for ANY reason (server error, network drop,
+      // clean finish-without-summary), release the camera and let the app reset
+      // its controls — otherwise an unexpected close would leave the camera on
+      // and the UI stuck. The `gen` guard ignores a socket superseded by a
+      // stop()/restart (its close must not touch the new session). Suppress the
+      // generic "Disconnected." if the server already explained itself via an
+      // error message.
+      ws.onclose = () => {
+        if (gen !== this._gen) return;
+        if (this.running && !this._errored) this.onStatus("Disconnected.");
+        this._releaseCapture();
+        this.onClosed();
+      };
+
+      this.running = true;
+      this.onStatus("Tracking…");
+      requestAnimationFrame(() => this._predict());
+    } catch (err) {
+      // Model/socket/playback failure after the camera was acquired: release it
+      // so a failed Start never leaves the camera live.
+      this._releaseCapture();
+      throw err;
+    }
   }
 
   async _getCamera() {
@@ -108,7 +152,8 @@ export class PoseWorkout {
     if (msg.type === "analysis") this.onAnalysis(msg);
     else if (msg.type === "summary") this.onSummary(msg);
     else if (msg.type === "set_complete") this.onSetComplete(msg);
-    else if (msg.type === "error") this.onStatus("Server: " + msg.message);
+    else if (msg.type === "ready") this.onReady(msg);
+    else if (msg.type === "error") { this._errored = true; this.onStatus("Server: " + msg.message); }
   }
 
   _predict() {
@@ -147,8 +192,13 @@ export class PoseWorkout {
     this.ws.send(JSON.stringify({ landmarks }));
   }
 
+  /** Whether the analysis socket is currently open (commands will be sent). */
+  isOpen() {
+    return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+  }
+
   _command(type) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.isOpen()) {
       this.ws.send(JSON.stringify({ type }));
     }
   }
@@ -157,12 +207,30 @@ export class PoseWorkout {
   reset() { this._command("reset"); }
   finish() { this._command("finish"); }
 
-  stop() {
+  /** Send "finish" and release the camera immediately, leaving the socket open
+   *  just long enough to receive (and so record via) the server's summary. The
+   *  socket is closed by onSummary's stop() or by the server; either way onclose
+   *  cleans up. Releasing now means navigating away can't leave the camera on
+   *  while we wait on a server reply that might never come. */
+  finishAndRelease() {
+    this.finish();
+    this._releaseCapture();
+  }
+
+  /** Stop the predict loop and free the camera (idempotent); leaves the socket. */
+  _releaseCapture() {
     this.running = false;
-    if (this.ws) this.ws.close();
     const tracks = this.video.srcObject?.getTracks() || [];
     tracks.forEach((t) => t.stop());
     this.video.srcObject = null;
+  }
+
+  stop() {
+    // Bump the generation so any in-flight start() and the closing socket's
+    // onclose recognise themselves as superseded and don't touch a later session.
+    this._gen++;
+    this._releaseCapture();
+    if (this.ws) this.ws.close();
   }
 }
 

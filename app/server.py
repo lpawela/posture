@@ -17,6 +17,7 @@ scores form, and (for a logged-in patient) stores the finished workout.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -86,15 +87,24 @@ def create_app(store=None) -> FastAPI:
         user = store.user_for_token(params.get("token"))
 
         # If a patient connects with their own assignment, drive the session
-        # from the prescription (exercise + set/rep targets).
+        # from the prescription (exercise + set/rep targets). A patient who
+        # supplies an assignment_id that can't be resolved or isn't theirs is
+        # rejected outright rather than silently falling back to a free session
+        # (which would record a mis-attributed workout with no prescription).
         assignment = None
         if params.get("assignment_id") and user and user.role is Role.PATIENT:
             try:
                 candidate = store.get_assignment(int(params["assignment_id"]))
-                if candidate.patient_id == user.id:
-                    assignment = candidate
             except (ValueError, NotFound):
-                assignment = None
+                candidate = None
+            if candidate is not None and candidate.patient_id == user.id:
+                assignment = candidate
+            else:
+                await websocket.send_json(
+                    {"type": "error", "message": "assignment not found or not yours"}
+                )
+                await websocket.close()
+                return
 
         if assignment is not None:
             exercise = assignment.exercise
@@ -134,7 +144,16 @@ def create_app(store=None) -> FastAPI:
 
         try:
             while True:
-                message = await websocket.receive_json()
+                try:
+                    message = await websocket.receive_json()
+                except json.JSONDecodeError:
+                    # A single malformed (non-JSON) frame shouldn't kill the
+                    # session; skip it and keep listening.
+                    continue
+                except KeyError:
+                    # A non-text (e.g. binary) frame — not something the client
+                    # should send. Ignore it too.
+                    continue
                 kind = message.get("type")
 
                 if kind == "reset":
@@ -145,6 +164,13 @@ def create_app(store=None) -> FastAPI:
 
                 if kind == "end_set":
                     session.end_set()
+                    # Abandon any partial rep in progress so the next set's
+                    # state machine (and per-rep extremes) starts clean and a
+                    # mid-descent rep doesn't land in the wrong set. (The
+                    # auto-close at target_reps inside record_rep needs no such
+                    # reset: it only fires on a *completed* rep, when the state
+                    # machine is already UP with no partial rep in flight.)
+                    analyzer.end_rep_cycle()
                     await websocket.send_json(
                         {"type": "set_complete", **session_state()}
                     )

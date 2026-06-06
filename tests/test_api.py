@@ -45,6 +45,16 @@ def test_register_me_and_login(client):
     assert bad.status_code == 401
 
 
+def test_logout_revokes_token(client):
+    reg = register(client, "carol", "patient")
+    token = reg["token"]
+    assert client.get("/api/auth/me", headers=auth(token)).status_code == 200
+    out = client.post("/api/auth/logout", headers=auth(token))
+    assert out.status_code == 200 and out.json()["ok"] is True
+    # The token must no longer authenticate after logout.
+    assert client.get("/api/auth/me", headers=auth(token)).status_code == 401
+
+
 def test_duplicate_register_conflict(client):
     register(client, "bob", "doctor")
     res = client.post(
